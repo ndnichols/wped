@@ -11,13 +11,16 @@ import time
 import re
 import xml.dom.minidom
 
-#test
+from delayed import Delayed
 
-total_entries = 7278278
+__all__ = ['RedirectPage', 'EntryPage', 'CategoryPage', 'Parser']
+
+totalEntries = 7278278
 
 char_map = {8722: '-', 8211: '-', 8212: '-', 8213: '-', 8216: "'", 8217: "'", 8218: ',', 8220: '"', 8221: '"', 8230: '...', 187: '>>', 7789: 't', 171: '<<', 173: '-', 180: "'", 699: "'", 7871: 'e', 192: 'A', 193: 'A', 194: 'A', 195: 'A', 196: 'A', 197: 'A', 198: 'Ae', 199: 'C', 200: 'E', 201: 'E', 202: 'E', 203: 'E', 204: 'I', 7885: 'o', 206: 'I', 205: 'I', 208: 'D', 209: 'N', 210: 'O', 211: 'O', 212: 'O', 213: 'O', 214: 'O', 215: 'x', 216: 'O', 217: 'U', 218: 'U', 207: 'I', 220: 'U', 221: 'Y', 223: 'S', 224: 'a', 225: 'a', 226: 'a', 227: 'a', 228: 'a', 229: 'a', 230: 'ae', 231: 'c', 232: 'e', 233: 'e', 234: 'e', 235: 'e', 236: 'i', 237: 'i', 238: 'i', 239: 'i', 240: 'o', 241: 'n', 242: 'o', 243: 'o', 244: 'o', 245: 'o', 246: 'o', 247: '/', 248: 'o', 249: 'u', 250: 'u', 251: 'u', 252: 'u', 253: 'y', 255: 'y', 256: 'A', 257: 'a', 259: 'a', 261: 'a', 263: 'c', 268: 'C', 269: 'c', 279: 'e', 281: 'e', 283: 'e', 287: 'g', 219: 'U', 298: 'I', 299: 'i', 304: 'I', 305: 'i', 322: 'l', 324: 'n', 332: 'O', 333: 'o', 335: 't', 337: 'o', 339: 'oe', 345: 'r', 346: 'S', 347: 's', 351: 's', 352: 'S', 353: 's', 355: 'c', 363: 'u', 367: 'u', 378: 'z', 379: 'Z', 381: 'Z', 382: 'z', 924: 'M', 451: '!'}
 
 def safeStr(text):
+    # print 'safestr got', text
     import unicodedata
     if type(text) is not unicode:
         try:
@@ -26,11 +29,9 @@ def safeStr(text):
             pass
         text = unicodedata.normalize('NFKD', text)
     ret = [c if ord(c) < 128 else char_map.get(ord(c), '') for c in text]
-#    ret = ''.join(ret)
-#    ret = ret.encode('ASCII', 'ignore')
-    # return ret
-    return ''
-
+    ret = ''.join(ret)
+    return ret
+    
 _start_page_regex = re.compile(r'<page>')
 _end_page_regex = re.compile(r'</page>')
 _wp_link_regex = re.compile(r'\[\[([^\|^\]]*)(?:\|([^\]]*))?\]\]')
@@ -57,34 +58,30 @@ def _getLink(text):
     match =  _wp_link_regex.search(text)
     return match.groups() if match is not None else None    
 
-class RedirectPage(object):
+class RedirectPage(Delayed):
     """Represents a redirectpage from Wikipedia"""
     def __init__(self, title, text):
-        super(RedirectPage, self).__init__()
-        self.title = title
-        self.target = ''
-        self.explanations = []
-        self._parseText(text)
-    def _parseText(self, text):
-        self.target = _getLink(text)[0]
-        self.explanations = list(_getTemplates(text))
+        super(RedirectPage, self).__init__(self._parseText, ('target', 'explanations'))
+        self.lookup('title', lambda: safeStr(title))
+        self.lookup('raw_text', lambda: safeStr(text))
+    def _parseText(self):
+        self.target = _getLink(self.raw_text)[0]
+        self.explanations = list(_getTemplates(self.raw_text))
     def __str__(self):
         return 'Redirect page from %s to %s, explanations are %s' % (self.title, self.target, self.explanations)
         
-class CategoryPage(object):
+class CategoryPage(Delayed):
     """One of the category pages"""
     def __init__(self, title, text):
-        super(CategoryPage, self).__init__()
-        self.title = title
-        self.text = ''
+        super(CategoryPage, self).__init__(self._parseText, ('categories',))
+        self.lookup('title', lambda: safeStr(title))
+        self.lookup('raw_text', lambda: safeStr(text))
+    def _parseText(self):
         self.categories = []
-        self._parseText(text)
-    def _parseText(self, text):
-        self.text = text
-        all_links = _getLinks(text)
+        all_links = _getLinks(self.raw_text)
         for target, surface in all_links:
-            if target.startswith('Category'):
-                self.categories.append(target)
+            if target.startswith('Category:'):
+                self.categories.append(str(target[9:]))
     def __str__(self):
         ret = ''
         ret += 'Category page with title %s\n' % (self.title)
@@ -93,25 +90,24 @@ class CategoryPage(object):
             ret += '   %s\n' % (category)
         return ret
 
-class EntryPage(object):
+class EntryPage(Delayed):
     '''Represents a normal entry page in WP.'''
     def __init__(self, title, text):
-        super(EntryPage, self).__init__()
-        self.title = title
-        self.links = [] #list of (target, surface) tuples
-        self.categories = []
-        self.text = ''
-        self.intro_text = ''
-        self._parseText(text)
-    def _parseText(self, text):
-        self.text = text
-        all_links = _getLinks(self.text)
+        super(EntryPage, self).__init__(self._parseText, ('links', 'categories', 'intro_text'))
+        self.lookup('title', lambda: safeStr(title))
+        self.lookup('raw_text', lambda: safeStr(text))
+        # self.title = title
+        # self.raw_text = text
+
+    def _parseText(self):
+        self.categories, self.links = [], []
+        all_links = _getLinks(self.raw_text)
         for target, surface in all_links:
             if surface is None:
                 surface = target
-            if target.startswith('Category'):
-                self.categories.append(target)
-            elif target.startswith('Image'):
+            if target.startswith('Category:'):
+                self.categories.append(str(target[9:]))
+            elif target.startswith('Image:'):
                 continue
             elif _language_regex.search(target) is not None:
                 continue
@@ -129,22 +125,39 @@ class EntryPage(object):
             ret += '  %s\n' % (category)
         return ret
         
+def checkString(s):
+    for i, c in enumerate(s):
+        if ord(c) > 127:
+            print 'Letter %s, %s at %s is out of range!' % (c, ord(c), i)
+            # print safeStr(s[max(0, i-25):i+25])
+        
 i = 0
 def Page(lines):
-    global i
-    print i
-    i += 1
+    # global i
+    # print i
+    # i += 1
     #return
     page_dom = xml.dom.minidom.parseString(' '.join(lines))
     page_title = page_dom.getElementsByTagName('title')[0].childNodes[0].data
-    page_text = page_dom.getElementsByTagName('text')[0].childNodes[0].data
-    page_title, page_text = safeStr(page_title), safeStr(page_text)
+    try:
+        page_text = page_dom.getElementsByTagName('text')[0].childNodes[0].data
+    except IndexError:
+        page_text = ''
+
+    # print 'Checking', page_title
+    # checkString(page_title)
+    # checkString(page_text)
+    # print '\n\n\n'
+    # raw_input()
+    #page_title, page_text = safeStr(page_title), safeStr(page_text)
     # print 'http://en.wikipedia.org/wiki/' + page_title
     # print page_text[:100]
     if page_text.startswith('#REDIRECT'):
         return RedirectPage(page_title, page_text)
-    elif page_title.startswith('Category'):
+    elif page_title.startswith('Category:'):
         return CategoryPage(page_title, page_text)
+    elif page_title.startswith('Image:'):
+        return None
     else:
         return EntryPage(page_title, page_text)
     # TODO Implement the other page types   
@@ -160,8 +173,11 @@ class Parser:
         in_page = False
         i = 0
         ret = []
+        line_no = -1
         while True:
+            line_no += 1
             line = o.readline()
+            
             if not line: #done parsing whole xml file
                 return
             
@@ -171,23 +187,68 @@ class Parser:
                 i += 1
                 in_page = False
                 ret.append(line)
-                yield (Page(ret))
-                if i == 10000:
-                    break
+                try:
+                    page = Page(ret)
+                except IndexError, e:
+                    print "line no", line_no
+                    raise
+                if page is not None:
+                    yield page
+                # if i == 10000:
+                #     break
                 # raw_input()
                 ret = []
                 continue
                 
             if in_page:
                 ret.append(line)
-            
+    def _shouldRecordPage(self, page):
+        if isinstance(page, EntryPage) and 'Featured articles' in page.categories:
+            print "ADDING PAGE!"
+            return True
+        return False
+    def filterEntriesInto(self, out_filename):
+        in_file = open(self.filename, 'r')
+        out_file = open(out_filename, 'w')
+        out_file.write('<mediawiki>\n')
+        in_page = False
+        i = 0
+        curr_lines = []
+        while True:
+            line = in_file.readline()
+            if not line:
+                print "All Done!"
+                out_file.write('</mediawiki>\n')
+                out_file.close()
+                return
+            if _start_page_regex.search(line) is not None:
+                in_page = True
+            if _end_page_regex.search(line) is not None:
+                i += 1
+                if i % 10000 == 0:
+                    print i
+                in_page = False
+                curr_lines.append(line)
+                page = Page(curr_lines)
+                # if isinstance(page, EntryPage):
+                #     print '%s is an entry page, its categories are %s' % (page.title, page.categories)
+                #     raw_input("press enter to continue")
+                if self._shouldRecordPage(page):
+                    out_file.writelines([cl + '\n' for cl in curr_lines])
+                curr_lines = []
+                continue
+            if in_page:
+                curr_lines.append(line)
+                
+        
 if __name__ == '__main__':
     start_time = time.time()
     c = Parser('/Users/nate/Programming/wped/wikipedia.xml')
-    for page in c.getEntries():
-        if isinstance(page, CategoryPage):
-            print page
-    print 'getting to 10000 took %s' % (time.time() - start_time)
-
+    c.filterEntriesInto('/Users/nate/Programming/wped/wikipedia_small.xml')
+    # for page in c.getEntries():
+    #         if isinstance(page, CategoryPage):
+    #             print page
+    #     print 'getting to 10000 took %s' % (time.time() - start_time)
+    
         
     
